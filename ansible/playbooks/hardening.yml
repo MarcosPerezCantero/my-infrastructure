@@ -1,0 +1,151 @@
+---
+- name: Hardening servidor Ubuntu
+  hosts: all
+  become: true
+
+  vars:
+    new_user: marcos
+    ssh_port: 2222
+    allowed_ssh_keys:
+      - "{{ lookup('file', '/home/agente_ia/.ssh/marcos_clave.pub') }}"
+
+  tasks:
+    # 1. Crear usuario marcos con sudo
+    - name: Crear usuario marcos
+      user:
+        name: "{{ new_user }}"
+        groups: sudo
+        shell: /bin/bash
+        create_home: true
+        state: present
+
+    - name: Añadir clave SSH a marcos
+      authorized_key:
+        user: "{{ new_user }}"
+        key: "{{ item }}"
+        state: present
+      loop: "{{ allowed_ssh_keys }}"
+
+    - name: Permitir sudo sin contraseña a marcos
+      copy:
+        content: "{{ new_user }} ALL=(ALL) NOPASSWD:ALL"
+        dest: "/etc/sudoers.d/{{ new_user }}"
+        mode: '0440'
+
+    # 2. SSH hardening
+    - name: Cambiar puerto SSH
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?Port '
+        line: "Port {{ ssh_port }}"
+
+    - name: Desactivar login root por SSH
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+
+    - name: Desactivar login con contraseña
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+
+    - name: Reiniciar SSH socket
+      systemd:
+        name: ssh.socket
+        state: restarted
+        daemon_reload: true
+
+    - name: Reiniciar SSH service
+      service:
+        name: ssh
+        state: restarted
+
+    - name: Verificar SSH escucha en puerto nuevo
+      wait_for:
+        port: "{{ ssh_port }}"
+        timeout: 10
+
+    # 3. Firewall UFW
+    - name: Instalar UFW
+      apt:
+        name: ufw
+        state: present
+        update_cache: true
+
+    - name: Permitir puerto SSH nuevo
+      ufw:
+        rule: allow
+        port: "{{ ssh_port }}"
+        proto: tcp
+
+    - name: Permitir HTTP
+      ufw:
+        rule: allow
+        port: '80'
+        proto: tcp
+
+    - name: Permitir HTTPS
+      ufw:
+        rule: allow
+        port: '443'
+        proto: tcp
+
+    - name: Activar UFW
+      ufw:
+        state: enabled
+        default: deny
+
+    # 4. Fail2ban
+    - name: Instalar fail2ban
+      apt:
+        name: fail2ban
+        state: present
+
+    - name: Configurar fail2ban para SSH
+      copy:
+        content: |
+          [sshd]
+          enabled = true
+          port = {{ ssh_port }}
+          filter = sshd
+          logpath = /var/log/auth.log
+          maxretry = 3
+          bantime = 3600
+          findtime = 600
+        dest: /etc/fail2ban/jail.local
+        mode: '0644'
+
+    - name: Arrancar fail2ban
+      service:
+        name: fail2ban
+        state: restarted
+        enabled: true
+
+    # 5. Actualizaciones automáticas
+    - name: Instalar unattended-upgrades
+      apt:
+        name: unattended-upgrades
+        state: present
+
+    - name: Activar actualizaciones automáticas
+      copy:
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+          APT::Periodic::AutocleanInterval "7";
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        mode: '0644'
+
+    # 6. Auditoría
+    - name: Instalar auditd
+      apt:
+        name: auditd
+        state: present
+
+    - name: Arrancar auditd
+      service:
+        name: auditd
+        state: started
+        enabled: true
