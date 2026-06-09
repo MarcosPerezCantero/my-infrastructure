@@ -1,6 +1,5 @@
 # my-infrastructure
 Infrastructure as Code — Terraform + Ansible for server provisioning, hardening, CI/CD and monitoring
-Te propongo este README. Léelo y me dices si le cambias algo:
 
 Infraestructura como código para provisionar y securizar un servidor Linux en OVH Public Cloud.
 
