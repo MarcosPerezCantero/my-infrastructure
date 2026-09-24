@@ -1,0 +1,8 @@
+# Copia este archivo a hosts.yml (ignorado por git) y rellena tus datos.
+all:
+  hosts:
+    srv-01:
+      ansible_host: 203.0.113.10          # IP pública del servidor (ejemplo, RFC 5737)
+      ansible_user: ubuntu                # usuario inicial de la imagen (OVH/Ubuntu: ubuntu)
+      ansible_port: 22                    # puerto SSH actual; tras el hardening será ssh_port
+      ansible_ssh_private_key_file: ~/.ssh/id_ed25519

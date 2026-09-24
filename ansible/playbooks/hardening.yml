@@ -1,151 +1,208 @@
 ---
+# Hardening de un servidor Ubuntu recién creado.
+#
+# Primera ejecución: conecta con el usuario inicial de la imagen (p. ej. "ubuntu")
+# por el puerto 22. Al terminar, SSH solo acepta a admin_user, con clave, en ssh_port.
+# Ejecuciones posteriores: usa admin_user y ssh_port en el inventario y añade
+# --ask-become-pass (sudo pide contraseña).
+
 - name: Hardening servidor Ubuntu
   hosts: all
   become: true
 
   vars:
-    new_user: marcos
-    ssh_port: 2222
-    allowed_ssh_keys:
-      - "{{ lookup('file', '/home/agente_ia/.ssh/marcos_clave.pub') }}"
+    # Clave pública leída en la máquina que ejecuta Ansible
+    admin_ssh_public_key: "{{ lookup('file', admin_ssh_public_key_file) }}"
+    # Usuarios que pueden entrar por SSH (añade aquí p. ej. un usuario de despliegue)
+    ssh_allowed_users: ["{{ admin_user }}"]
+    # Quita el sudo sin contraseña que cloud-init da al usuario inicial
+    remove_cloud_init_sudo: true
+
+  pre_tasks:
+    - name: Comprobar variables obligatorias
+      ansible.builtin.assert:
+        that:
+          - admin_password_hash | length > 0
+          - admin_ssh_public_key | length > 0
+          - ssh_port | int > 0
+        fail_msg: >-
+          Define admin_password_hash (ansible-vault) y admin_ssh_public_key_file.
+          Sin contraseña, admin_user no podría usar sudo.
+
+    - name: Detectar si SSH usa activación por socket (Ubuntu 24.04+)
+      ansible.builtin.stat:
+        path: /lib/systemd/system/ssh.socket
+      register: ssh_socket_unit
 
   tasks:
-    # 1. Crear usuario marcos con sudo
-    - name: Crear usuario marcos
-      user:
-        name: "{{ new_user }}"
+    # 1. Usuario administrador (sudo CON contraseña)
+    - name: Crear usuario administrador
+      ansible.builtin.user:
+        name: "{{ admin_user }}"
         groups: sudo
+        append: true
         shell: /bin/bash
         create_home: true
+        password: "{{ admin_password_hash }}"
+        update_password: on_create
         state: present
 
-    - name: Añadir clave SSH a marcos
-      authorized_key:
-        user: "{{ new_user }}"
-        key: "{{ item }}"
+    - name: Autorizar clave SSH del administrador
+      ansible.posix.authorized_key:
+        user: "{{ admin_user }}"
+        key: "{{ admin_ssh_public_key }}"
+        exclusive: true
         state: present
-      loop: "{{ allowed_ssh_keys }}"
 
-    - name: Permitir sudo sin contraseña a marcos
-      copy:
-        content: "{{ new_user }} ALL=(ALL) NOPASSWD:ALL"
-        dest: "/etc/sudoers.d/{{ new_user }}"
-        mode: '0440'
+    - name: Asegurar que no hay sudo sin contraseña para el administrador
+      ansible.builtin.file:
+        path: "/etc/sudoers.d/{{ admin_user }}"
+        state: absent
 
-    # 2. SSH hardening
-    - name: Cambiar puerto SSH
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?Port '
-        line: "Port {{ ssh_port }}"
-
-    - name: Desactivar login root por SSH
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?PermitRootLogin'
-        line: 'PermitRootLogin no'
-
-    - name: Desactivar login con contraseña
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?PasswordAuthentication'
-        line: 'PasswordAuthentication no'
-
-    - name: Reiniciar SSH socket
-      systemd:
-        name: ssh.socket
-        state: restarted
-        daemon_reload: true
-
-    - name: Reiniciar SSH service
-      service:
-        name: ssh
-        state: restarted
-
-    - name: Verificar SSH escucha en puerto nuevo
-      wait_for:
-        port: "{{ ssh_port }}"
-        timeout: 10
-
-    # 3. Firewall UFW
-    - name: Instalar UFW
-      apt:
-        name: ufw
+    # 2. Paquetes
+    - name: Instalar paquetes de seguridad
+      ansible.builtin.apt:
+        name:
+          - ufw
+          - fail2ban
+          - python3-systemd
+          - unattended-upgrades
+          - auditd
         state: present
         update_cache: true
+        cache_valid_time: 3600
 
-    - name: Permitir puerto SSH nuevo
-      ufw:
+    # 3. Firewall: se abre el puerto nuevo ANTES de mover SSH
+    - name: UFW - permitir el puerto SSH actual (evita cortar esta sesión)
+      community.general.ufw:
         rule: allow
-        port: "{{ ssh_port }}"
+        port: "{{ ansible_port | default(22) | string }}"
         proto: tcp
 
-    - name: Permitir HTTP
-      ufw:
+    - name: UFW - permitir el puerto SSH final
+      community.general.ufw:
         rule: allow
-        port: '80'
+        port: "{{ ssh_port | string }}"
         proto: tcp
 
-    - name: Permitir HTTPS
-      ufw:
+    - name: UFW - permitir puertos públicos
+      community.general.ufw:
         rule: allow
-        port: '443'
+        port: "{{ item | string }}"
         proto: tcp
+      loop: "{{ ufw_allowed_ports }}"
 
-    - name: Activar UFW
-      ufw:
-        state: enabled
+    - name: UFW - denegar entrada por defecto
+      community.general.ufw:
+        direction: incoming
         default: deny
 
-    # 4. Fail2ban
-    - name: Instalar fail2ban
-      apt:
-        name: fail2ban
-        state: present
+    - name: UFW - permitir salida por defecto
+      community.general.ufw:
+        direction: outgoing
+        default: allow
 
+    - name: UFW - activar
+      community.general.ufw:
+        state: enabled
+
+    # 4. SSH: archivo propio en sshd_config.d, validado antes de aplicarse
+    - name: Configurar SSH (00-hardening.conf)
+      ansible.builtin.template:
+        src: ../templates/00-hardening.conf.j2
+        dest: /etc/ssh/sshd_config.d/00-hardening.conf
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/sshd -t -f %s
+      notify: Reiniciar SSH
+
+    - name: Validar la configuración SSH completa
+      ansible.builtin.command: /usr/sbin/sshd -t
+      changed_when: false
+
+    # 5. Fail2ban
     - name: Configurar fail2ban para SSH
-      copy:
-        content: |
-          [sshd]
-          enabled = true
-          port = {{ ssh_port }}
-          filter = sshd
-          logpath = /var/log/auth.log
-          maxretry = 3
-          bantime = 3600
-          findtime = 600
-        dest: /etc/fail2ban/jail.local
-        mode: '0644'
+      ansible.builtin.template:
+        src: ../templates/jail-sshd.local.j2
+        dest: /etc/fail2ban/jail.d/sshd.local
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reiniciar fail2ban
 
-    - name: Arrancar fail2ban
-      service:
+    - name: Activar fail2ban
+      ansible.builtin.systemd:
         name: fail2ban
-        state: restarted
+        state: started
         enabled: true
 
-    # 5. Actualizaciones automáticas
-    - name: Instalar unattended-upgrades
-      apt:
-        name: unattended-upgrades
-        state: present
-
+    # 6. Actualizaciones de seguridad automáticas
     - name: Activar actualizaciones automáticas
-      copy:
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        owner: root
+        group: root
+        mode: "0644"
         content: |
           APT::Periodic::Update-Package-Lists "1";
           APT::Periodic::Unattended-Upgrade "1";
           APT::Periodic::AutocleanInterval "7";
-        dest: /etc/apt/apt.conf.d/20auto-upgrades
-        mode: '0644'
 
-    # 6. Auditoría
-    - name: Instalar auditd
-      apt:
-        name: auditd
-        state: present
-
-    - name: Arrancar auditd
-      service:
+    # 7. Auditoría
+    - name: Activar auditd
+      ansible.builtin.systemd:
         name: auditd
         state: started
         enabled: true
+
+    # 8. Aplicar SSH y comprobar que el puerto nuevo responde antes de seguir
+    - name: Aplicar cambios pendientes (reinicio de SSH)
+      ansible.builtin.meta: flush_handlers
+
+    - name: Comprobar que SSH escucha en el puerto nuevo
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: "{{ ssh_port }}"
+        timeout: 20
+      delegate_to: localhost
+      become: false
+
+    # 9. Limpieza final (lo último: después ya no hay sudo sin contraseña)
+    - name: UFW - cerrar el puerto SSH antiguo
+      community.general.ufw:
+        rule: allow
+        port: "{{ ansible_port | default(22) | string }}"
+        proto: tcp
+        delete: true
+      when: (ansible_port | default(22) | int) != (ssh_port | int)
+
+    - name: Quitar sudo sin contraseña de cloud-init
+      ansible.builtin.file:
+        path: /etc/sudoers.d/90-cloud-init-users
+        state: absent
+      when: remove_cloud_init_sudo | bool
+
+  handlers:
+    - name: Recargar systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+      listen: Reiniciar SSH
+
+    - name: Reiniciar ssh.socket
+      ansible.builtin.systemd:
+        name: ssh.socket
+        state: restarted
+      when: ssh_socket_unit.stat.exists
+      listen: Reiniciar SSH
+
+    - name: Reiniciar servicio ssh
+      ansible.builtin.systemd:
+        name: ssh
+        state: restarted
+      listen: Reiniciar SSH
+
+    - name: Reiniciar fail2ban
+      ansible.builtin.systemd:
+        name: fail2ban
+        state: restarted

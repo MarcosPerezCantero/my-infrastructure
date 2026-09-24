@@ -1,0 +1,8 @@
+# Gestionado por Ansible (my-infrastructure).
+[sshd]
+enabled  = true
+port     = {{ ssh_port }}
+backend  = systemd
+maxretry = {{ fail2ban_maxretry }}
+bantime  = {{ fail2ban_bantime }}
+findtime = {{ fail2ban_findtime }}

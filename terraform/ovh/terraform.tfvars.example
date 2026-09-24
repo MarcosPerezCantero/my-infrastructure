@@ -1,0 +1,6 @@
+# Copia a terraform.tfvars (ignorado por git). Las credenciales van por openrc.sh / TF_VAR_*.
+os_auth_url         = "https://auth.cloud.ovh.net/v3"
+os_region           = "GRA11"
+instance_name       = "srv-01"
+flavor_name         = "d2-2"
+ssh_public_key_path = "~/.ssh/id_ed25519.pub"

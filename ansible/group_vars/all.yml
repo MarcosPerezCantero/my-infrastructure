@@ -1,0 +1,25 @@
+# Valores por defecto. Sobrescríbelos en el inventario o con -e.
+
+# Usuario administrador que se crea en el servidor
+admin_user: admin
+
+# Hash de la contraseña del usuario (necesaria para sudo; NO se usa para SSH).
+# Genérala con:  mkpasswd --method=sha-512
+# y guárdala cifrada con ansible-vault, nunca en claro en el repo.
+admin_password_hash: ""
+
+# Clave pública que podrá entrar por SSH con admin_user
+admin_ssh_public_key_file: ~/.ssh/id_ed25519.pub
+
+# Puerto SSH final
+ssh_port: 2222
+
+# Puertos TCP públicos adicionales (además de ssh_port)
+ufw_allowed_ports:
+  - 80
+  - 443
+
+# fail2ban
+fail2ban_maxretry: 3
+fail2ban_bantime: 3600
+fail2ban_findtime: 600

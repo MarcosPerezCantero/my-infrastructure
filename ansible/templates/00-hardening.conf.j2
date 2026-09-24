@@ -1,0 +1,23 @@
+# Gestionado por Ansible (my-infrastructure). No editar a mano.
+# Nombre con prefijo 00- para leerse antes que otros archivos de sshd_config.d
+# (p. ej. 50-cloud-init.conf de OVH, que activa PasswordAuthentication).
+# En sshd gana el PRIMER valor que aparece para cada opción.
+
+Port {{ ssh_port }}
+
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+AuthenticationMethods publickey
+
+AllowUsers {{ ssh_allowed_users | join(" ") }}
+
+MaxAuthTries 3
+LoginGraceTime 30
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding no
+ClientAliveInterval 300
+ClientAliveCountMax 2
